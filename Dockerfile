@@ -16,6 +16,7 @@ RUN apt-get update \
 
 # Install official puya-ts globally
 RUN npm install -g @algorandfoundation/puya-ts@latest
+RUN npm install -g @algorandfoundation/algorand-typescript
 
 # Create non-root user and prepare workspace
 RUN useradd --system --uid 1002 --create-home --home-dir /home/app app \
