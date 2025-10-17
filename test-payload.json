@@ -1,0 +1,4 @@
+{
+  "filename": "HelloWorld.algo.ts",
+  "code": "import { Contract } from '@algorandfoundation/algorand-typescript'\n\nexport class HelloWorld extends Contract {\n  public hello(name: string): string {\n    return `${this.getHello()} ${name}`\n  }\n\n  private getHello() {\n    return 'Hello'\n  }\n}"
+}

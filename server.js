@@ -7,7 +7,7 @@ import { spawn } from "child_process";
 import { v4 as uuidv4 } from "uuid";
 
 const PORT = Number(process.env.PORT || 3000);
-const GLOBAL_PUYA_CLI = process.env.PUYA_BIN || "puya-ts";
+const GLOBAL_PUYA_CLI = "puya-ts";
 const DEFAULT_TIMEOUT_MS = Number(process.env.PUYA_TIMEOUT_MS || 20000);
 const BODY_LIMIT = process.env.BODY_LIMIT || "2mb";
 
@@ -126,38 +126,15 @@ function tryRecoverCodeFromString(raw) {
 }
 
 app.post("/compile", async (req, res) => {
+  let tmpRoot;
   try {
-    console.log("DEBUG: typeof req.body:", typeof req.body);
-    if (typeof req.body === "object") {
-      console.log("DEBUG: req.body keys:", Object.keys(req.body).slice(0, 20));
-    } else if (req.rawBody) {
-      console.log("DEBUG: req.rawBody (first 300):", req.rawBody.slice(0, 300));
-    }
-
-    const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (!ct.includes("application/json")) {
-      console.warn("WARN: Content-Type is not application/json; attempting recovery from raw body");
-    }
-
     let filename = "contract.algo.ts";
     let sourceCode = "";
 
+    // Handle payload from request body
     if (req.body && typeof req.body === "object" && typeof req.body.code === "string") {
       filename = req.body.filename || filename;
       sourceCode = req.body.code;
-    } else if (req.rawBody && typeof req.rawBody === "string") {
-      const recovered = tryRecoverCodeFromString(req.rawBody);
-      if (recovered) {
-        filename = recovered.filename || filename;
-        sourceCode = recovered.code;
-      } else {
-        const braceQuoteCount = (req.rawBody.match(/["{}]/g) || []).length;
-        if (braceQuoteCount < 5) {
-          sourceCode = req.rawBody;
-        } else {
-          return res.status(400).json({ ok: false, error: "Unable to parse JSON body and extract 'code'. Ensure Content-Type: application/json and send { \"filename\", \"code\" }." });
-        }
-      }
     } else {
       return res.status(400).json({ ok: false, error: "Invalid request body. Expected JSON with { filename, code }." });
     }
@@ -166,48 +143,51 @@ app.post("/compile", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Field 'code' must be a non-empty string" });
     }
 
-    if (sourceCode.includes("\\n") || sourceCode.includes("\\r\\n") || sourceCode.includes("\\t") || sourceCode.includes('\\"')) {
-      sourceCode = sourceCode.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
-    }
-
-    // --- BEGIN FIX: compute safeFilename before using it
     const safeFilename = path.basename(filename) || "contract.algo.ts";
     const id = uuidv4();
 
-    // create temp inside project workspace so TypeScript module resolution finds /app/node_modules
-    const tmpBase = process.env.PUYA_TMP_BASE || path.join(process.cwd(), "tmp");
-    fs.mkdirSync(tmpBase, { recursive: true });
-    const tmpRoot = fs.mkdtempSync(path.join(tmpBase, `puya-${id}-`));
+    // Use /tmp for file operations
+    tmpRoot = fs.mkdtempSync(path.join("/tmp", `puya-${id}-`));
     const srcPath = path.join(tmpRoot, safeFilename);
     const outDir = path.join(tmpRoot, "out");
 
     console.log("writing to:", srcPath);
     fs.writeFileSync(srcPath, sourceCode, "utf8");
-    fs.mkdirSync(outDir, { recursive: true });  
-    // --- END FIX
+    fs.mkdirSync(outDir, { recursive: true });
+    
+    // Copy pre-seeded template from /tmp/puya-template
+    const templateDir = "/tmp/puya-template";
+    if (fs.existsSync(templateDir)) {
+      const templatePkg = path.join(templateDir, "package.json");
+      const templateNodeModules = path.join(templateDir, "node_modules");
+      
+      if (fs.existsSync(templatePkg)) {
+        fs.cpSync(templatePkg, path.join(tmpRoot, "package.json"));
+      }
+      if (fs.existsSync(templateNodeModules)) {
+        fs.cpSync(templateNodeModules, path.join(tmpRoot, "node_modules"), { recursive: true });
+      }
+    }
 
     const args = [
       srcPath,
-      "--out-dir", outDir,
-      "--puya-path", "/app/puya/puya"
+      "--out-dir", outDir
     ];
 
     console.log("running:", GLOBAL_PUYA_CLI, args.join(" "));
-    
-    // Suppress disposal errors from puya-ts
-    const originalConsoleError = console.error;
-    console.error = (...args) => {
-      const msg = args.join(' ');
-      if (msg.includes('SuppressedError') || msg.includes('disposal')) return;
-      originalConsoleError.apply(console, args);
-    };
-    
     const result = await runCommand(GLOBAL_PUYA_CLI, args, { env: process.env });
-    console.error = originalConsoleError;
 
-    const artifacts = readAllFilesRecursively(outDir);
-    const meta = { stdout: result.stdout.slice(0, 20000), stderr: result.stderr.slice(0, 20000), producedFiles: Object.keys(artifacts) };
-
+    // Read all generated files from output directory
+    const allArtifacts = readAllFilesRecursively(outDir);
+    
+    // Filter only .arc32.json and .arc56.json files
+    const artifacts = {};
+    for (const [filename, content] of Object.entries(allArtifacts)) {
+      if (filename.endsWith('.arc32.json') || filename.endsWith('.arc56.json')) {
+        artifacts[filename] = content;
+      }
+    }
+    
     // Cleanup temp directory
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -216,21 +196,22 @@ app.post("/compile", async (req, res) => {
     }
 
     if (Object.keys(artifacts).length === 0) {
-      return res.status(500).json({ ok: false, error: "No artifacts produced", meta });
+      return res.status(500).json({ ok: false, error: "No .arc32.json or .arc56.json files produced" });
     }
 
-    return res.json({ ok: true, artifacts, meta });
+    // Return only .arc32.json and .arc56.json files
+    return res.json({ ok: true, files: artifacts });
   } catch (err) {
     console.error("compile error:", err);
     // Cleanup on error
-    if (typeof tmpRoot !== 'undefined') {
+    if (tmpRoot) {
       try {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
       } catch (cleanupErr) {
         console.warn("Error cleanup warning:", cleanupErr.message);
       }
     }
-    return res.status(500).json({ ok: false, error: err.message || String(err), stderr: err.stderr });
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
   }
 });
 

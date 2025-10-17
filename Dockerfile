@@ -1,19 +1,15 @@
-# Dockerfile - puya-ts compiler with Ubuntu base
-FROM ubuntu:22.04
+# Dockerfile - puya-ts compiler with node-slim
+FROM node:22-slim
 
 ENV NODE_ENV=production
 ENV USE_LOCAL_PUYA=1
-ENV PUYA_BIN=/app/puya/puya 
 ENV PATH=/usr/local/bin:$PATH
-ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Install Node.js 22 and dependencies
+# Install dependencies
 RUN apt-get update && \
     apt-get install -y curl ca-certificates && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 # Download Puya binary and extract it
@@ -37,6 +33,11 @@ RUN npm install @algorandfoundation/algorand-typescript
 
 # Copy app source
 COPY server.js ./
+
+# Pre-seed /tmp with package.json and node_modules for puya-ts
+RUN mkdir -p /tmp/puya-template
+COPY package.json /tmp/puya-template/
+RUN cd /tmp/puya-template && npm install @algorandfoundation/algorand-typescript
 RUN mkdir -p /app/tmp
 
 EXPOSE 3000
