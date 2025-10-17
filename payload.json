@@ -1,4 +1,4 @@
 {
-  "filename": "HelloWorld.algo.ts",
-  "code": "import { BaseContract, log, op } from \"@algorandfoundation/algorand-typescript\";\nexport default class HelloWorldContract extends BaseContract {\n  public approvalProgram(): boolean {\n    const name = String(op.Txn.applicationArgs(0));\n    log(\"Hello\");\n    return true;\n  }\n}"
+  "filename": "contract.algo.ts",
+  "code": "export function hello() { return 'world'; }"
 }

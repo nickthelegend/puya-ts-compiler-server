@@ -1,4 +1,4 @@
-// server.js (robust JSON recovery, ESM)
+// server.js (robust JSON recovery, ESM) — FIXED safeFilename + tmp under project
 import express from "express";
 import fs from "fs";
 import os from "os";
@@ -27,7 +27,6 @@ app.use(
   })
 );
 
-// Helpful small logger for debugging (remove or tone down in prod)
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - content-type: ${req.headers["content-type"]}`);
   next();
@@ -91,42 +90,31 @@ function readAllFilesRecursively(dir) {
 function tryRecoverCodeFromString(raw) {
   if (!raw || typeof raw !== "string") return null;
 
-  // Trim leading junk until the first '{' to handle stray characters/prefixes
   const firstBrace = raw.indexOf("{");
   const trimmed = firstBrace >= 0 ? raw.slice(firstBrace) : raw;
 
-  // 1) Try JSON.parse
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === "object" && typeof parsed.code === "string") return { filename: parsed.filename, code: parsed.code };
   } catch (e) {
-    // fallthrough to tolerant extraction
+    // continue
   }
 
-  // 2) Tolerant regex extraction of "code": "...."
-  // This will capture between the first "code": " and the matching closing quote, including escaped quotes.
   const codeRegex = /"code"\s*:\s*"([\s\S]*?)"\s*(?:,|\})/m;
   const m = trimmed.match(codeRegex);
   if (m && m[1] !== undefined) {
     let captured = m[1];
-
-    // Unescape JSON-style escapes via JSON.parse trick
     try {
-      // Put captured in a JSON string wrapper and parse to unescape, but first escape existing double-quotes safely
       const safe = `"${captured.replace(/\\?"/g, '\\"').replace(/\n/g, "\\n")}"`;
       captured = JSON.parse(safe);
     } catch (ee) {
-      // Fallback: common replacements
       captured = captured.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
     }
-
-    // extract filename if present
     const fnMatch = trimmed.match(/"filename"\s*:\s*"([^"]+)"/m);
     const filename = fnMatch ? fnMatch[1] : undefined;
     return { filename, code: captured };
   }
 
-  // 3) If trimmed itself looks like the code (no JSON wrapper), return null here to let caller decide
   return null;
 }
 
@@ -139,10 +127,8 @@ app.post("/compile", async (req, res) => {
       console.log("DEBUG: req.rawBody (first 300):", req.rawBody.slice(0, 300));
     }
 
-    // Enforce content-type
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
-      // still try to recover from rawBody (special case) but inform the client
       console.warn("WARN: Content-Type is not application/json; attempting recovery from raw body");
     }
 
@@ -158,13 +144,10 @@ app.post("/compile", async (req, res) => {
         filename = recovered.filename || filename;
         sourceCode = recovered.code;
       } else {
-        // Last resort: If the entire rawBody looks like code (no JSON), use it verbatim.
-        // We check for quotes and braces — if these are present in high proportion, avoid using rawBody.
         const braceQuoteCount = (req.rawBody.match(/["{}]/g) || []).length;
         if (braceQuoteCount < 5) {
           sourceCode = req.rawBody;
         } else {
-          // refuse: looks like JSON but couldn't extract code
           return res.status(400).json({ ok: false, error: "Unable to parse JSON body and extract 'code'. Ensure Content-Type: application/json and send { \"filename\", \"code\" }." });
         }
       }
@@ -176,23 +159,33 @@ app.post("/compile", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Field 'code' must be a non-empty string" });
     }
 
-    // Convert common double-escaped sequences if present
     if (sourceCode.includes("\\n") || sourceCode.includes("\\r\\n") || sourceCode.includes("\\t") || sourceCode.includes('\\"')) {
       sourceCode = sourceCode.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
     }
 
-    // Prevent path traversal
+    // --- BEGIN FIX: compute safeFilename before using it
     const safeFilename = path.basename(filename) || "contract.algo.ts";
     const id = uuidv4();
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), `puya-${id}-`));
+
+    // create temp inside project workspace so TypeScript module resolution finds /app/node_modules
+    const tmpBase = process.env.PUYA_TMP_BASE || path.join(process.cwd(), "tmp");
+    fs.mkdirSync(tmpBase, { recursive: true });
+    const tmpRoot = fs.mkdtempSync(path.join(tmpBase, `puya-${id}-`));
     const srcPath = path.join(tmpRoot, safeFilename);
     const outDir = path.join(tmpRoot, "out");
 
     console.log("writing to:", srcPath);
     fs.writeFileSync(srcPath, sourceCode, "utf8");
-    fs.mkdirSync(outDir, { recursive: true });
+    fs.mkdirSync(outDir, { recursive: true });  
+    // --- END FIX
 
-    const args = [srcPath, "--out-dir", outDir, "--skip-version-check"];
+    const args = [
+      srcPath,
+      "--out-dir", outDir,
+      "--skip-version-check",
+      "--puya-path", process.env.PUYA_PATH
+    ];
+
     console.log("running:", GLOBAL_PUYA_CLI, args.join(" "));
     const result = await runCommand(GLOBAL_PUYA_CLI, args, { env: process.env });
 
