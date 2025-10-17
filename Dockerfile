@@ -1,18 +1,20 @@
-# Dockerfile - puya-ts compiler with local binary
-FROM node:22-slim
+# Dockerfile - puya-ts compiler with Ubuntu base
+FROM ubuntu:22.04
 
 ENV NODE_ENV=production
 ENV USE_LOCAL_PUYA=1
-ENV PUYA_BIN=puya-ts
-ENV PUYA_PATH=/app/puya/puya 
+ENV PUYA_BIN=/app/puya/puya 
 ENV PATH=/usr/local/bin:$PATH
+ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Minimal system deps (ca-certificates kept for HTTPS)
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl tar ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+# Install Node.js 22 and dependencies
+RUN apt-get update && \
+    apt-get install -y curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 # Download Puya binary and extract it
 RUN mkdir -p /app/puya && \
@@ -22,23 +24,20 @@ RUN mkdir -p /app/puya && \
     chmod +x /app/puya/puya && \
     rm puya.tar.gz
 
-# Install official puya-ts and Algorand TypeScript globally
-RUN npm install -g @algorandfoundation/puya-ts@latest \
-  && npm install -g @algorandfoundation/algorand-typescript
-
-# Create non-root user
-RUN useradd --system --uid 1002 --create-home --home-dir /home/app app \
-  && mkdir -p /app && chown -R app:app /app
+# Install puya-ts globally
+RUN npm install -g @algorandfoundation/puya-ts
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
+COPY tsconfig.json ./
 RUN npm ci
 
-# Copy app source
-COPY --chown=app:app server.js ./
-RUN mkdir -p /app/tmp && chown -R app:app /app/tmp
+# Install algorand-typescript locally
+RUN npm install @algorandfoundation/algorand-typescript
 
-USER app
+# Copy app source
+COPY server.js ./
+RUN mkdir -p /app/tmp
 
 EXPOSE 3000
 

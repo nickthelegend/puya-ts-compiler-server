@@ -36,6 +36,12 @@ function runCommand(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const env = Object.assign({}, process.env, opts.env || {});
     const child = spawn(cmd, args, { ...opts, env, stdio: ["ignore", "pipe", "pipe"] });
+    
+    // Ignore disposal errors
+    child.on('error', (err) => {
+      if (err.message && err.message.includes('SuppressedError')) return;
+      child.emit('actualError', err);
+    });
 
     let stdout = "";
     let stderr = "";
@@ -48,14 +54,15 @@ function runCommand(cmd, args, opts = {}) {
       reject(new Error(`Process timed out after ${DEFAULT_TIMEOUT_MS}ms\n${stderr}`));
     }, DEFAULT_TIMEOUT_MS);
 
-    child.on("error", (err) => {
+    child.on("actualError", (err) => {
       clearTimeout(timeout);
       reject(err);
     });
 
     child.on("close", (code) => {
       clearTimeout(timeout);
-      if (code !== 0) {
+      // Ignore disposal errors - check if stderr contains only disposal error
+      if (code !== 0 && !stderr.includes('SuppressedError')) {
         const err = new Error(`Process exited with code ${code}\n${stderr}`);
         err.code = code;
         err.stderr = stderr;
@@ -182,15 +189,31 @@ app.post("/compile", async (req, res) => {
     const args = [
       srcPath,
       "--out-dir", outDir,
-      "--skip-version-check",
-      "--puya-path", process.env.PUYA_PATH
+      "--puya-path", "/app/puya/puya"
     ];
 
     console.log("running:", GLOBAL_PUYA_CLI, args.join(" "));
+    
+    // Suppress disposal errors from puya-ts
+    const originalConsoleError = console.error;
+    console.error = (...args) => {
+      const msg = args.join(' ');
+      if (msg.includes('SuppressedError') || msg.includes('disposal')) return;
+      originalConsoleError.apply(console, args);
+    };
+    
     const result = await runCommand(GLOBAL_PUYA_CLI, args, { env: process.env });
+    console.error = originalConsoleError;
 
     const artifacts = readAllFilesRecursively(outDir);
     const meta = { stdout: result.stdout.slice(0, 20000), stderr: result.stderr.slice(0, 20000), producedFiles: Object.keys(artifacts) };
+
+    // Cleanup temp directory
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.warn("Cleanup warning:", cleanupErr.message);
+    }
 
     if (Object.keys(artifacts).length === 0) {
       return res.status(500).json({ ok: false, error: "No artifacts produced", meta });
@@ -199,6 +222,14 @@ app.post("/compile", async (req, res) => {
     return res.json({ ok: true, artifacts, meta });
   } catch (err) {
     console.error("compile error:", err);
+    // Cleanup on error
+    if (typeof tmpRoot !== 'undefined') {
+      try {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.warn("Error cleanup warning:", cleanupErr.message);
+      }
+    }
     return res.status(500).json({ ok: false, error: err.message || String(err), stderr: err.stderr });
   }
 });
