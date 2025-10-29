@@ -7,10 +7,18 @@ ENV PATH=/usr/local/bin:$PATH
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies including Python and pipx
 RUN apt-get update && \
-    apt-get install -y curl ca-certificates && \
+    apt-get install -y curl ca-certificates python3 python3-pip python3-venv && \
+    python3 -m pip install --user --break-system-packages pipx && \
+    python3 -m pipx ensurepath && \
     rm -rf /var/lib/apt/lists/*
+
+# Update PATH to include pipx binaries
+ENV PATH="/root/.local/bin:$PATH"
+
+# Install AlgoKit via pipx
+RUN pipx install algokit
 
 # Download Puya binary and extract it
 RUN mkdir -p /app/puya && \

@@ -1,0 +1,25 @@
+{
+  "arc32Json": {
+    "name": "HelloWorld",
+    "desc": "A simple hello world contract",
+    "methods": [
+      {
+        "name": "hello",
+        "args": [
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "returns": {
+          "type": "string"
+        }
+      }
+    ],
+    "networks": {},
+    "source": {
+      "approval": "I3ByYWdtYSB2ZXJzaW9uIDEw",
+      "clear": "I3ByYWdtYSB2ZXJzaW9uIDEw"
+    }
+  }
+}

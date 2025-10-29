@@ -215,6 +215,73 @@ app.post("/compile", async (req, res) => {
   }
 });
 
+app.post("/generate-client", async (req, res) => {
+  let tmpRoot;
+  try {
+    // Validate request body
+    if (!req.body || typeof req.body !== "object" || !req.body.arc32Json) {
+      return res.status(400).json({ ok: false, error: "Invalid request body. Expected JSON with { arc32Json }." });
+    }
+
+    const arc32Data = req.body.arc32Json;
+    const id = uuidv4();
+
+    // Create temporary directory
+    tmpRoot = fs.mkdtempSync(path.join("/tmp", `algokit-${id}-`));
+    const arc32Path = path.join(tmpRoot, "contract.arc32.json");
+    const clientPath = path.join(tmpRoot, "client.ts");
+
+    // Write ARC32 JSON to file
+    const arc32Content = typeof arc32Data === "string" ? arc32Data : JSON.stringify(arc32Data, null, 2);
+    fs.writeFileSync(arc32Path, arc32Content, "utf8");
+    console.log("ARC32 written to:", arc32Path);
+
+    // Run algokit generate client command
+    const args = ["generate", "client", arc32Path, "--output", clientPath];
+    console.log("running: algokit", args.join(" "));
+    
+    await runCommand("algokit", args, { cwd: tmpRoot });
+
+    // Read generated client.ts file
+    if (!fs.existsSync(clientPath)) {
+      throw new Error("client.ts file was not generated");
+    }
+
+    const clientContent = fs.readFileSync(clientPath, "utf8");
+    
+    // Cleanup temp directory
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.warn("Cleanup warning:", cleanupErr.message);
+    }
+
+    return res.json({ 
+      ok: true, 
+      files: {
+        "client.ts": {
+          encoding: "utf8",
+          data: clientContent
+        }
+      }
+    });
+  } catch (err) {
+    console.error("generate-client error:", err);
+    // Cleanup on error
+    if (tmpRoot) {
+      try {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.warn("Error cleanup warning:", cleanupErr.message);
+      }
+    }
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Compiler server running on port ${PORT}`);
+  console.log(`📋 Available endpoints:`);
+  console.log(`   POST /compile - Compile TypeScript contracts`);
+  console.log(`   POST /generate-client - Generate TypeScript client from ARC32`);
 });
